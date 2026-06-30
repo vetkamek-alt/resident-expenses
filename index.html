@@ -36,7 +36,18 @@ const { useState, useEffect, useMemo, useCallback } = React;
 // ---------------------------------------------------------------
 const SUPABASE_URL = "https://cchvfsqmnjgbdeeuijbb.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNjaHZmc3FtbmpnYmRlZXVpamJiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI4MTE1MjMsImV4cCI6MjA5ODM4NzUyM30.xuFh8ApqU0twfAu5fpHYkifa4hYz2ZvnEEkvfH40g0I";
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// Guard: createClient() throws on an invalid/placeholder URL, which would
+// otherwise crash the whole script before React can render anything.
+const SUPABASE_CONFIGURED = !SUPABASE_URL.startsWith("YOUR_") && !SUPABASE_ANON_KEY.startsWith("YOUR_");
+let supabase = null;
+if (SUPABASE_CONFIGURED) {
+  try {
+    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  } catch (e) {
+    console.error("Supabase init failed:", e);
+  }
+}
 
 // ---------------------------------------------------------------
 // Helpers
@@ -468,7 +479,7 @@ function App() {
   // ---- initial load ----
   useEffect(() => {
     async function load() {
-      if (SUPABASE_URL.startsWith("YOUR_") || SUPABASE_ANON_KEY.startsWith("YOUR_")) {
+      if (!SUPABASE_CONFIGURED || !supabase) {
         setConfigError(true);
         setLoading(false);
         return;
@@ -502,6 +513,7 @@ function App() {
   }, []);
 
   const saveSettings = async () => {
+    if (!supabase) { alert("Supabase isn't configured yet — paste your URL and anon key into the script."); return; }
     setSavingSettings(true);
     try {
       await supabase.from("petpal_settings").upsert({ id: 1, clinic_cat_names: clinicCats, noreen_cat_names: noreenCats });
@@ -513,6 +525,7 @@ function App() {
   };
 
   const submitInvoice = async ({ date, supplier, paid_upfront_by, total_amount, items }) => {
+    if (!supabase) { alert("Supabase isn't configured yet — paste your URL and anon key into the script."); return; }
     setSubmittingInvoice(true);
     try {
       const { data: invData, error: invErr } = await supabase
@@ -549,6 +562,7 @@ function App() {
   };
 
   const submitPayment = async ({ date, payer, amount, reference }) => {
+    if (!supabase) { alert("Supabase isn't configured yet — paste your URL and anon key into the script."); return; }
     setSubmittingPayment(true);
     try {
       const { data, error } = await supabase.from("petpal_payments").insert({ date, payer, amount, reference }).select().single();
@@ -674,4 +688,3 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>
 </body>
 </html>
-
