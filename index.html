@@ -1,1 +1,677 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Petpal · Resident Cat Expense Tracker</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,500&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Inter', sans-serif; background-color: #F6F3EC; }
+  .font-display { font-family: 'Fraunces', serif; }
+  .font-mono { font-family: 'JetBrains Mono', monospace; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cbbfa6; border-radius: 4px; }
+  .tab-underline { transition: all .2s ease; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { animation: spin 0.8s linear infinite; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(4px);} to {opacity:1; transform: translateY(0);} }
+  .fade-in { animation: fadein .25s ease; }
+  input, select { color-scheme: light; }
+</style>
+</head>
+<body class="text-stone-800">
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+// ---------------------------------------------------------------
+// Supabase configuration — paste your project credentials below
+// ---------------------------------------------------------------
+const SUPABASE_URL = "https://cchvfsqmnjgbdeeuijbb.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNjaHZmc3FtbmpnYmRlZXVpamJiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI4MTE1MjMsImV4cCI6MjA5ODM4NzUyM30.xuFh8ApqU0twfAu5fpHYkifa4hYz2ZvnEEkvfH40g0I";
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ---------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------
+const fmt = (n) => {
+  const v = Number(n) || 0;
+  return v.toLocaleString(undefined, { style: "currency", currency: "USD" });
+};
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+function computeBaseline(clinicCats, noreenCats) {
+  const c = clinicCats.length, n = noreenCats.length;
+  const total = c + n;
+  if (total === 0) return { clinicPct: 0.5, noreenPct: 0.5, c, n };
+  return { clinicPct: c / total, noreenPct: n / total, c, n };
+}
+
+// Given an item line + settings, return { clinicShare, noreenShare }
+function splitItem(item, baseline, clinicCats, noreenCats) {
+  const cost = Number(item.cost) || 0;
+  if (item.split_type === "clinic100") return { clinicShare: cost, noreenShare: 0 };
+  if (item.split_type === "noreen100") return { clinicShare: 0, noreenShare: cost };
+  if (item.split_type === "custom") {
+    const selected = item.selected_cats || [];
+    const total = selected.length;
+    if (total === 0) return { clinicShare: 0, noreenShare: 0 };
+    const cSel = selected.filter((name) => clinicCats.includes(name)).length;
+    const nSel = total - cSel;
+    return { clinicShare: cost * (cSel / total), noreenShare: cost * (nSel / total) };
+  }
+  // proportional (default)
+  return { clinicShare: cost * baseline.clinicPct, noreenShare: cost * baseline.noreenPct };
+}
+
+// ---------------------------------------------------------------
+// Small UI atoms
+// ---------------------------------------------------------------
+function Spinner({ label }) {
+  return (
+    <div className="flex items-center gap-2 text-sm text-stone-500">
+      <svg className="spinner h-4 w-4 text-amber-700" viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeOpacity="0.2"/>
+        <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
+      </svg>
+      <span className="font-mono text-xs tracking-wide">{label || "Syncing with cloud database…"}</span>
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <label className="block">
+      <span className="block text-[11px] font-mono uppercase tracking-wider text-stone-500 mb-1">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+const inputCls = "w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-700/40 focus:border-amber-700";
+
+function Pill({ children, tone = "stone" }) {
+  const tones = {
+    stone: "bg-stone-200 text-stone-700",
+    clinic: "bg-sky-100 text-sky-800",
+    noreen: "bg-rose-100 text-rose-800",
+    green: "bg-emerald-100 text-emerald-800",
+  };
+  return <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-mono font-medium ${tones[tone]}`}>{children}</span>;
+}
+
+// ---------------------------------------------------------------
+// Settings Panel — Cat Profiles CRUD
+// ---------------------------------------------------------------
+function SettingsPanel({ clinicCats, noreenCats, setClinicCats, setNoreenCats, saveSettings, saving }) {
+  const [newClinic, setNewClinic] = useState("");
+  const [newNoreen, setNewNoreen] = useState("");
+  const baseline = computeBaseline(clinicCats, noreenCats);
+
+  const addCat = (roster, value, setValue) => {
+    const name = value.trim();
+    if (!name) return;
+    if (roster === "clinic") setClinicCats((prev) => [...prev, name]);
+    else setNoreenCats((prev) => [...prev, name]);
+    setValue("");
+  };
+
+  const removeCat = (roster, name) => {
+    if (roster === "clinic") setClinicCats((prev) => prev.filter((n) => n !== name));
+    else setNoreenCats((prev) => prev.filter((n) => n !== name));
+  };
+
+  const Roster = ({ title, tone, names, roster, value, setValue }) => (
+    <div className="bg-white rounded-lg border border-stone-200 p-5 flex-1 min-w-[260px]">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-display text-lg font-semibold">{title}</h3>
+        <Pill tone={tone}>{names.length} cats</Pill>
+      </div>
+      <div className="space-y-1.5 mb-3 max-h-64 overflow-y-auto pr-1">
+        {names.length === 0 && <p className="text-sm text-stone-400 italic">No cats added yet.</p>}
+        {names.map((name) => (
+          <div key={name} className="flex items-center justify-between bg-stone-50 rounded px-3 py-1.5 text-sm fade-in">
+            <span>{name}</span>
+            <button onClick={() => removeCat(roster, name)} className="text-stone-400 hover:text-rose-600 text-xs font-mono">✕</button>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <input
+          className={inputCls}
+          placeholder="Cat name…"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") addCat(roster, value, setValue); }}
+        />
+        <button onClick={() => addCat(roster, value, setValue)} className="px-3 py-2 rounded-md bg-amber-800 text-white text-sm font-medium hover:bg-amber-900 shrink-0">Add</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="font-display text-2xl font-semibold mb-1">Cat Profiles &amp; Settings</h2>
+        <p className="text-sm text-stone-500">The baseline proportional split is derived automatically from roster size.</p>
+      </div>
+
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-center gap-4">
+        <span className="font-mono text-2xl font-semibold text-amber-900">{baseline.c}:{baseline.n}</span>
+        <div className="text-sm text-amber-900">
+          <p className="font-medium">Current baseline split</p>
+          <p className="text-amber-700/80">Clinic {Math.round(baseline.clinicPct * 100)}% · Noreen {Math.round(baseline.noreenPct * 100)}%</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-5">
+        <Roster title="Clinic Cats" tone="clinic" names={clinicCats} roster="clinic" value={newClinic} setValue={setNewClinic} />
+        <Roster title="Noreen's Cats" tone="noreen" names={noreenCats} roster="noreen" value={newNoreen} setValue={setNewNoreen} />
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button onClick={saveSettings} disabled={saving} className="px-5 py-2.5 rounded-md bg-stone-900 text-white text-sm font-medium hover:bg-stone-800 disabled:opacity-50">
+          Save Rosters
+        </button>
+        {saving && <Spinner label="Saving rosters to cloud…" />}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// Invoice Item Line
+// ---------------------------------------------------------------
+function ItemLine({ item, onChange, onRemove, clinicCats, noreenCats, baseline }) {
+  const allCats = [...clinicCats.map((n) => ({ name: n, owner: "clinic" })), ...noreenCats.map((n) => ({ name: n, owner: "noreen" }))];
+  const { clinicShare, noreenShare } = splitItem(item, baseline, clinicCats, noreenCats);
+
+  const toggleCat = (name) => {
+    const selected = item.selected_cats || [];
+    const next = selected.includes(name) ? selected.filter((n) => n !== name) : [...selected, name];
+    onChange({ ...item, selected_cats: next });
+  };
+
+  return (
+    <div className="border border-stone-200 rounded-lg p-4 bg-stone-50/60 space-y-3 fade-in">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <Field label="Item name">
+          <input className={inputCls} value={item.item_name} onChange={(e) => onChange({ ...item, item_name: e.target.value })} placeholder="e.g. Dry kibble" />
+        </Field>
+        <Field label="Category">
+          <select className={inputCls} value={item.category} onChange={(e) => onChange({ ...item, category: e.target.value })}>
+            <option>Food</option><option>Litter</option><option>Other</option>
+          </select>
+        </Field>
+        <Field label="Total cost">
+          <input type="number" min="0" step="0.01" className={inputCls} value={item.cost} onChange={(e) => onChange({ ...item, cost: e.target.value })} placeholder="0.00" />
+        </Field>
+        <Field label="Quantity">
+          <input type="number" min="1" step="1" className={inputCls} value={item.quantity} onChange={(e) => onChange({ ...item, quantity: e.target.value })} placeholder="1" />
+        </Field>
+        <Field label="Allocation rule">
+          <select className={inputCls} value={item.split_type} onChange={(e) => onChange({ ...item, split_type: e.target.value, selected_cats: [] })}>
+            <option value="proportional">Proportional Split</option>
+            <option value="clinic100">100% Clinic</option>
+            <option value="noreen100">100% Noreen</option>
+            <option value="custom">Custom Selection</option>
+          </select>
+        </Field>
+      </div>
+
+      {item.split_type === "custom" && (
+        <div className="bg-white border border-stone-200 rounded-md p-3">
+          <p className="text-[11px] font-mono uppercase tracking-wider text-stone-500 mb-2">Tick cats sharing this item</p>
+          <div className="flex flex-wrap gap-2">
+            {allCats.map((c) => (
+              <label key={c.name} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs cursor-pointer select-none ${
+                (item.selected_cats || []).includes(c.name)
+                  ? (c.owner === "clinic" ? "bg-sky-100 border-sky-300 text-sky-800" : "bg-rose-100 border-rose-300 text-rose-800")
+                  : "bg-stone-50 border-stone-200 text-stone-500"
+              }`}>
+                <input type="checkbox" className="hidden" checked={(item.selected_cats || []).includes(c.name)} onChange={() => toggleCat(c.name)} />
+                {c.name}
+              </label>
+            ))}
+            {allCats.length === 0 && <p className="text-xs text-stone-400 italic">Add cats in Settings first.</p>}
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between pt-1">
+        <div className="flex gap-4 text-xs font-mono">
+          <span className="text-sky-700">Clinic: {fmt(clinicShare)}</span>
+          <span className="text-rose-700">Noreen: {fmt(noreenShare)}</span>
+        </div>
+        <button onClick={onRemove} className="text-xs text-stone-400 hover:text-rose-600 font-mono">Remove line ✕</button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// Invoice Form
+// ---------------------------------------------------------------
+function InvoiceForm({ clinicCats, noreenCats, baseline, onSubmit, submitting }) {
+  const blankItem = () => ({ id: uid(), item_name: "", category: "Food", cost: "", quantity: 1, split_type: "proportional", selected_cats: [] });
+  const [date, setDate] = useState(todayISO());
+  const [supplier, setSupplier] = useState("");
+  const [paidBy, setPaidBy] = useState("Clinic");
+  const [items, setItems] = useState([blankItem()]);
+
+  const total = items.reduce((sum, it) => sum + (Number(it.cost) || 0), 0);
+
+  const updateItem = (idx, next) => setItems((prev) => prev.map((it, i) => (i === idx ? next : it)));
+  const removeItem = (idx) => setItems((prev) => prev.filter((_, i) => i !== idx));
+  const addItem = () => setItems((prev) => [...prev, blankItem()]);
+
+  const reset = () => { setDate(todayISO()); setSupplier(""); setPaidBy("Clinic"); setItems([blankItem()]); };
+
+  const handleSubmit = async () => {
+    if (!supplier.trim() || items.length === 0) return;
+    await onSubmit({ date, supplier, paid_upfront_by: paidBy, total_amount: total, items });
+    reset();
+  };
+
+  return (
+    <div className="bg-white rounded-lg border border-stone-200 p-5 space-y-5">
+      <h2 className="font-display text-xl font-semibold">New Invoice Entry</h2>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Field label="Date">
+          <input type="date" className={inputCls} value={date} onChange={(e) => setDate(e.target.value)} />
+        </Field>
+        <Field label="Supplier / vendor">
+          <input className={inputCls} value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="e.g. Pet Supplies Plus" />
+        </Field>
+        <Field label="Paid upfront by">
+          <select className={inputCls} value={paidBy} onChange={(e) => setPaidBy(e.target.value)}>
+            <option>Clinic</option><option>Noreen</option>
+          </select>
+        </Field>
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-mono uppercase tracking-wider text-stone-500">Item lines</h3>
+          <button onClick={addItem} className="text-xs font-medium text-amber-800 hover:text-amber-900">+ Add item line</button>
+        </div>
+        {items.map((item, idx) => (
+          <ItemLine key={item.id} item={item} onChange={(next) => updateItem(idx, next)} onRemove={() => removeItem(idx)} clinicCats={clinicCats} noreenCats={noreenCats} baseline={baseline} />
+        ))}
+      </div>
+
+      <div className="flex items-center justify-between border-t border-stone-200 pt-4">
+        <div className="font-mono text-sm">Invoice total: <span className="font-semibold text-lg">{fmt(total)}</span></div>
+        <div className="flex items-center gap-3">
+          {submitting && <Spinner label="Syncing with cloud database…" />}
+          <button onClick={handleSubmit} disabled={submitting || !supplier.trim()} className="px-5 py-2.5 rounded-md bg-amber-800 text-white text-sm font-medium hover:bg-amber-900 disabled:opacity-50">
+            Save Invoice
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------
+function Dashboard({ netBalance, invoiceCount, paymentCount, totalSpend }) {
+  const owesText = netBalance === 0
+    ? "All settled up"
+    : netBalance > 0
+      ? `Noreen owes Clinic ${fmt(netBalance)}`
+      : `Clinic owes Noreen ${fmt(Math.abs(netBalance))}`;
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="md:col-span-2 bg-stone-900 text-white rounded-lg p-6 flex flex-col justify-between">
+        <span className="text-[11px] font-mono uppercase tracking-wider text-stone-400">Net outstanding balance</span>
+        <span className="font-display text-3xl font-semibold mt-2">{owesText}</span>
+      </div>
+      <div className="bg-white rounded-lg border border-stone-200 p-5">
+        <span className="text-[11px] font-mono uppercase tracking-wider text-stone-500">Invoices logged</span>
+        <p className="font-display text-2xl font-semibold mt-1">{invoiceCount}</p>
+      </div>
+      <div className="bg-white rounded-lg border border-stone-200 p-5">
+        <span className="text-[11px] font-mono uppercase tracking-wider text-stone-500">Total spend</span>
+        <p className="font-display text-2xl font-semibold mt-1">{fmt(totalSpend)}</p>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// Invoice History
+// ---------------------------------------------------------------
+function InvoiceHistory({ invoices, itemsByInvoice, baseline, clinicCats, noreenCats }) {
+  return (
+    <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+      <div className="p-4 border-b border-stone-200">
+        <h2 className="font-display text-xl font-semibold">Invoice History Log</h2>
+      </div>
+      <div className="divide-y divide-stone-100 max-h-[600px] overflow-y-auto">
+        {invoices.length === 0 && <p className="p-5 text-sm text-stone-400 italic">No invoices recorded yet.</p>}
+        {invoices.map((inv) => {
+          const items = itemsByInvoice[inv.id] || [];
+          let clinicTotal = 0, noreenTotal = 0;
+          items.forEach((it) => {
+            const s = splitItem(it, baseline, clinicCats, noreenCats);
+            clinicTotal += s.clinicShare; noreenTotal += s.noreenShare;
+          });
+          return (
+            <div key={inv.id} className="p-4 hover:bg-stone-50">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                <div>
+                  <span className="font-medium">{inv.supplier}</span>
+                  <span className="text-xs text-stone-400 ml-2 font-mono">{inv.date}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Pill tone={inv.paid_upfront_by === "Clinic" ? "clinic" : "noreen"}>Paid by {inv.paid_upfront_by}</Pill>
+                  <span className="font-mono text-sm font-semibold">{fmt(inv.total_amount)}</span>
+                </div>
+              </div>
+              <div className="text-xs text-stone-500 space-x-4 font-mono">
+                <span>Clinic share: {fmt(clinicTotal)}</span>
+                <span>Noreen share: {fmt(noreenTotal)}</span>
+                <span>{items.length} item{items.length !== 1 ? "s" : ""}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// Settlement Form + Log
+// ---------------------------------------------------------------
+function SettlementPanel({ payments, onAdd, submitting }) {
+  const [date, setDate] = useState(todayISO());
+  const [payer, setPayer] = useState("Clinic");
+  const [amount, setAmount] = useState("");
+  const [reference, setReference] = useState("");
+
+  const handleSubmit = async () => {
+    if (!amount) return;
+    await onAdd({ date, payer, amount: Number(amount), reference });
+    setDate(todayISO()); setPayer("Clinic"); setAmount(""); setReference("");
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-lg border border-stone-200 p-5 space-y-4">
+        <h2 className="font-display text-xl font-semibold">Record a Settlement</h2>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <Field label="Date"><input type="date" className={inputCls} value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+          <Field label="Payer">
+            <select className={inputCls} value={payer} onChange={(e) => setPayer(e.target.value)}>
+              <option>Clinic</option><option>Noreen</option>
+            </select>
+          </Field>
+          <Field label="Amount"><input type="number" min="0" step="0.01" className={inputCls} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" /></Field>
+          <Field label="Reference"><input className={inputCls} value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Venmo, check #..." /></Field>
+        </div>
+        <div className="flex items-center gap-3">
+          <button onClick={handleSubmit} disabled={submitting || !amount} className="px-5 py-2.5 rounded-md bg-amber-800 text-white text-sm font-medium hover:bg-amber-900 disabled:opacity-50">Save Settlement</button>
+          {submitting && <Spinner label="Syncing with cloud database…" />}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+        <div className="p-4 border-b border-stone-200"><h2 className="font-display text-xl font-semibold">Settlement Log</h2></div>
+        <div className="divide-y divide-stone-100 max-h-[400px] overflow-y-auto">
+          {payments.length === 0 && <p className="p-5 text-sm text-stone-400 italic">No settlements recorded yet.</p>}
+          {payments.map((p) => (
+            <div key={p.id} className="p-4 flex items-center justify-between hover:bg-stone-50">
+              <div>
+                <Pill tone={p.payer === "Clinic" ? "clinic" : "noreen"}>{p.payer}</Pill>
+                <span className="text-xs text-stone-400 ml-2 font-mono">{p.date}</span>
+                {p.reference && <span className="text-xs text-stone-400 ml-2">· {p.reference}</span>}
+              </div>
+              <span className="font-mono text-sm font-semibold text-emerald-700">{fmt(p.amount)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------
+// Main App
+// ---------------------------------------------------------------
+function App() {
+  const [tab, setTab] = useState("dashboard");
+  const [clinicCats, setClinicCats] = useState([]);
+  const [noreenCats, setNoreenCats] = useState([]);
+  const [invoices, setInvoices] = useState([]);
+  const [itemsByInvoice, setItemsByInvoice] = useState({});
+  const [payments, setPayments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [submittingInvoice, setSubmittingInvoice] = useState(false);
+  const [submittingPayment, setSubmittingPayment] = useState(false);
+  const [configError, setConfigError] = useState(false);
+
+  const baseline = useMemo(() => computeBaseline(clinicCats, noreenCats), [clinicCats, noreenCats]);
+
+  // ---- initial load ----
+  useEffect(() => {
+    async function load() {
+      if (SUPABASE_URL.startsWith("YOUR_") || SUPABASE_ANON_KEY.startsWith("YOUR_")) {
+        setConfigError(true);
+        setLoading(false);
+        return;
+      }
+      try {
+        const { data: settings } = await supabase.from("petpal_settings").select("*").eq("id", 1).maybeSingle();
+        if (settings) {
+          setClinicCats(settings.clinic_cat_names || []);
+          setNoreenCats(settings.noreen_cat_names || []);
+        }
+        const { data: inv } = await supabase.from("petpal_invoices").select("*").order("date", { ascending: false });
+        setInvoices(inv || []);
+
+        const { data: items } = await supabase.from("petpal_invoice_items").select("*");
+        const grouped = {};
+        (items || []).forEach((it) => {
+          if (!grouped[it.invoice_id]) grouped[it.invoice_id] = [];
+          grouped[it.invoice_id].push({ ...it, selected_cats: it.selected_cats || [] });
+        });
+        setItemsByInvoice(grouped);
+
+        const { data: pay } = await supabase.from("petpal_payments").select("*").order("date", { ascending: false });
+        setPayments(pay || []);
+      } catch (err) {
+        console.error("Load error:", err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, []);
+
+  const saveSettings = async () => {
+    setSavingSettings(true);
+    try {
+      await supabase.from("petpal_settings").upsert({ id: 1, clinic_cat_names: clinicCats, noreen_cat_names: noreenCats });
+    } catch (err) {
+      console.error("Settings save error:", err);
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const submitInvoice = async ({ date, supplier, paid_upfront_by, total_amount, items }) => {
+    setSubmittingInvoice(true);
+    try {
+      const { data: invData, error: invErr } = await supabase
+        .from("petpal_invoices")
+        .insert({ date, supplier, paid_upfront_by, total_amount })
+        .select()
+        .single();
+      if (invErr) throw invErr;
+
+      const rows = items.filter((it) => it.item_name.trim()).map((it) => ({
+        invoice_id: invData.id,
+        item_name: it.item_name,
+        category: it.category,
+        cost: Number(it.cost) || 0,
+        quantity: Number(it.quantity) || 1,
+        split_type: it.split_type,
+        selected_cats: it.selected_cats || [],
+      }));
+      let insertedItems = [];
+      if (rows.length) {
+        const { data: itemData, error: itemErr } = await supabase.from("petpal_invoice_items").insert(rows).select();
+        if (itemErr) throw itemErr;
+        insertedItems = itemData;
+      }
+
+      setInvoices((prev) => [invData, ...prev]);
+      setItemsByInvoice((prev) => ({ ...prev, [invData.id]: insertedItems }));
+    } catch (err) {
+      console.error("Invoice save error:", err);
+      alert("Could not save invoice — check console / Supabase config.");
+    } finally {
+      setSubmittingInvoice(false);
+    }
+  };
+
+  const submitPayment = async ({ date, payer, amount, reference }) => {
+    setSubmittingPayment(true);
+    try {
+      const { data, error } = await supabase.from("petpal_payments").insert({ date, payer, amount, reference }).select().single();
+      if (error) throw error;
+      setPayments((prev) => [data, ...prev]);
+    } catch (err) {
+      console.error("Payment save error:", err);
+      alert("Could not save settlement — check console / Supabase config.");
+    } finally {
+      setSubmittingPayment(false);
+    }
+  };
+
+  // ---- Reconciliation ----
+  const { netBalance, totalSpend } = useMemo(() => {
+    let noreenOwesClinic = 0;
+    let clinicOwesNoreen = 0;
+    let spend = 0;
+
+    invoices.forEach((inv) => {
+      spend += Number(inv.total_amount) || 0;
+      const items = itemsByInvoice[inv.id] || [];
+      let clinicShareTotal = 0, noreenShareTotal = 0;
+      items.forEach((it) => {
+        const s = splitItem(it, baseline, clinicCats, noreenCats);
+        clinicShareTotal += s.clinicShare;
+        noreenShareTotal += s.noreenShare;
+      });
+      if (inv.paid_upfront_by === "Clinic") {
+        noreenOwesClinic += noreenShareTotal;
+      } else if (inv.paid_upfront_by === "Noreen") {
+        clinicOwesNoreen += clinicShareTotal;
+      }
+    });
+
+    payments.forEach((p) => {
+      if (p.payer === "Noreen") noreenOwesClinic -= Number(p.amount) || 0;
+      else if (p.payer === "Clinic") clinicOwesNoreen -= Number(p.amount) || 0;
+    });
+
+    const net = noreenOwesClinic - clinicOwesNoreen;
+    return { netBalance: net, totalSpend: spend };
+  }, [invoices, itemsByInvoice, payments, baseline, clinicCats, noreenCats]);
+
+  const tabs = [
+    { key: "dashboard", label: "Dashboard & New Invoice" },
+    { key: "history", label: "Invoice History" },
+    { key: "settlements", label: "Settlement Log" },
+    { key: "settings", label: "Cat Profiles & Settings" },
+  ];
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Spinner label="Loading Petpal data…" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen pb-16">
+      <header className="border-b border-stone-200 bg-[#F6F3EC]/90 backdrop-blur sticky top-0 z-10">
+        <div className="max-w-6xl mx-auto px-5 py-5 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-full bg-amber-800 flex items-center justify-center text-white font-display font-semibold">P</div>
+            <div>
+              <h1 className="font-display text-xl font-semibold leading-tight">Petpal</h1>
+              <p className="text-[11px] font-mono uppercase tracking-wider text-stone-500">Resident Cat Expense Tracker</p>
+            </div>
+          </div>
+          <Pill>{baseline.c}:{baseline.n} baseline split</Pill>
+        </div>
+        <nav className="max-w-6xl mx-auto px-5 flex gap-1 overflow-x-auto">
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`tab-underline px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 ${
+                tab === t.key ? "border-amber-800 text-amber-900" : "border-transparent text-stone-500 hover:text-stone-700"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-5 py-6 space-y-6">
+        {configError && (
+          <div className="bg-rose-50 border border-rose-200 text-rose-800 rounded-lg p-4 text-sm">
+            Supabase credentials are not set. Edit <code className="font-mono">SUPABASE_URL</code> and <code className="font-mono">SUPABASE_ANON_KEY</code> near the top of the script tag, then reload.
+          </div>
+        )}
+
+        {tab === "dashboard" && (
+          <div className="space-y-6">
+            <Dashboard netBalance={netBalance} invoiceCount={invoices.length} paymentCount={payments.length} totalSpend={totalSpend} />
+            <InvoiceForm clinicCats={clinicCats} noreenCats={noreenCats} baseline={baseline} onSubmit={submitInvoice} submitting={submittingInvoice} />
+          </div>
+        )}
+
+        {tab === "history" && (
+          <InvoiceHistory invoices={invoices} itemsByInvoice={itemsByInvoice} baseline={baseline} clinicCats={clinicCats} noreenCats={noreenCats} />
+        )}
+
+        {tab === "settlements" && (
+          <SettlementPanel payments={payments} onAdd={submitPayment} submitting={submittingPayment} />
+        )}
+
+        {tab === "settings" && (
+          <SettingsPanel
+            clinicCats={clinicCats} noreenCats={noreenCats}
+            setClinicCats={setClinicCats} setNoreenCats={setNoreenCats}
+            saveSettings={saveSettings} saving={savingSettings}
+          />
+        )}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
 
