@@ -54,7 +54,7 @@ if (SUPABASE_CONFIGURED) {
 // ---------------------------------------------------------------
 const fmt = (n) => {
   const v = Number(n) || 0;
-  return v.toLocaleString(undefined, { style: "currency", currency: "USD" });
+  return v.toLocaleString(undefined, { style: "currency", currency: "MYR" });
 };
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const uid = () => Math.random().toString(36).slice(2, 10);
